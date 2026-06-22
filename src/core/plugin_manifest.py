@@ -11,7 +11,7 @@ from pathlib import Path
 
 from .crypto import hash_plugin_files, verify
 
-DEV_MODE_HOST_MARKERS = ("localhost", "127.0.0.1", "gruzalab", "test.vet-flow.pl")
+DEV_MODE_HOST_MARKERS = ("localhost", "127.0.0.1", "gruzalab", "test.vet-flow.pl", "vet-flow-demo")
 
 
 class PluginStatus(str, Enum):
