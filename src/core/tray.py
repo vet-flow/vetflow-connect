@@ -165,11 +165,12 @@ class TrayApp:
         )
 
         def _wrapped_setup(icon):
-            try:
-                icon.visible = True
-                logger.info("[TRAY] setup wywołany — ustawiam visible=True, icon HWND/obj=%r", getattr(icon, "_hwnd", icon))
-            except Exception:
-                logger.exception("[TRAY] błąd w setup")
+            # Nie połykamy błędu — jeśli icon.visible zawiedzie, app działałby
+            # "uruchomiony ale niewidoczny w trayu" (dokładnie ten bug). Niech
+            # propaguje: outer icon.run() loguje i re-raise, a user-setup (start
+            # RuntimeControllera) NIE wystartuje, dopóki ikona nie jest widoczna.
+            icon.visible = True
+            logger.info("[TRAY] setup wywołany — visible=True ustawione, icon=%r", getattr(icon, "_hwnd", icon))
             if setup is not None:
                 setup(icon)
 
