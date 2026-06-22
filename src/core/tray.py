@@ -151,12 +151,33 @@ class TrayApp:
 
     def run(self, setup: Callable | None = None) -> None:
         if pystray is None:
+            logger.error("[TRAY] pystray is None — backend nie zaimportowany!")
             raise RuntimeError("pystray is required for tray support")
 
+        logger.info("[TRAY] backend=%s, tworzę ikonę...", getattr(pystray.Icon, "__module__", "?"))
+        icon_img = create_status_icon(COLOR_YELLOW)
+        logger.info("[TRAY] ikona-image: %s size=%s", type(icon_img).__name__, getattr(icon_img, "size", "?"))
         self._icon = pystray.Icon(
             name="VetFlowConnect",
-            icon=create_status_icon(COLOR_YELLOW),
+            icon=icon_img,
             title="VetFlowConnect",
             menu=self._build_menu(),
         )
-        self._icon.run(setup=setup)
+
+        def _wrapped_setup(icon):
+            # Nie połykamy błędu — jeśli icon.visible zawiedzie, app działałby
+            # "uruchomiony ale niewidoczny w trayu" (dokładnie ten bug). Niech
+            # propaguje: outer icon.run() loguje i re-raise, a user-setup (start
+            # RuntimeControllera) NIE wystartuje, dopóki ikona nie jest widoczna.
+            icon.visible = True
+            logger.info("[TRAY] setup wywołany — visible=True ustawione, icon=%r", getattr(icon, "_hwnd", icon))
+            if setup is not None:
+                setup(icon)
+
+        logger.info("[TRAY] wchodzę w icon.run() (główny wątek, pętla komunikatów)...")
+        try:
+            self._icon.run(setup=_wrapped_setup)
+        except Exception:
+            logger.exception("[TRAY] icon.run() rzucił wyjątek")
+            raise
+        logger.info("[TRAY] icon.run() zakończony")
