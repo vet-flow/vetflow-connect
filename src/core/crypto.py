@@ -5,15 +5,20 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+# cryptography importowane LENIWO (w funkcjach), nie na poziomie modułu. Tryb dev
+# (localhost/gruzalab/test/vet-flow-demo) NIE weryfikuje podpisów → nie woła
+# sign/verify/generate_keypair, więc cryptography nie ładuje się na demo. Omija to
+# ból PyInstaller z natywnym bindingiem Rust (_rust) dla .exe na demo; cryptography
+# wchodzi dopiero przy realnej weryfikacji (prod).
 
 SIGNATURE_EXCLUDED_FILES = {"manifest.json", "signature.sig", "__pycache__"}
 
 
 def generate_keypair() -> tuple[bytes, bytes]:
     """Return a new RSA 2048 private/public keypair in PEM format."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -29,12 +34,19 @@ def generate_keypair() -> tuple[bytes, bytes]:
 
 def sign(data: bytes, private_key: bytes) -> bytes:
     """Sign bytes with an RSA private key."""
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
     key = serialization.load_pem_private_key(private_key, password=None)
     return key.sign(data, padding.PKCS1v15(), hashes.SHA256())
 
 
 def verify(data: bytes, signature: bytes, public_key: bytes) -> bool:
     """Verify an RSA PKCS1v15 SHA256 signature."""
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
     key = serialization.load_pem_public_key(public_key)
     try:
         key.verify(signature, data, padding.PKCS1v15(), hashes.SHA256())
