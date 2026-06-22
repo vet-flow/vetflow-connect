@@ -1,0 +1,12 @@
+{
+  "name": "dicom",
+  "version": "1.0.0",
+  "display_name": "DICOM Imaging (RTG/USG/CT)",
+  "author": "VetFlow",
+  "partner_id": "vetflow-core",
+  "device_serial": "*",
+  "license_type": "open",
+  "expires_at": null,
+  "signed_at": null,
+  "files_hash": "dev"
+}
