@@ -33,6 +33,7 @@ class VetFlowClient:
             async with session.post(
                 endpoint,
                 json=payload,
+                headers=self._legacy_headers,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
                 body = await self._read_json(response)
@@ -46,7 +47,7 @@ class VetFlowClient:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 endpoint,
-                headers=self._bearer_headers,
+                headers=self._legacy_headers,
                 timeout=aiohttp.ClientTimeout(total=15),
             ) as response:
                 body = await self._read_json(response)
@@ -62,7 +63,7 @@ class VetFlowClient:
                 async with session.post(
                     endpoint,
                     json=payload,
-                    headers=self._bearer_headers,
+                    headers=self._legacy_headers,
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as response:
                     if response.status in (200, 201, 204):
@@ -114,6 +115,60 @@ class VetFlowClient:
         except aiohttp.ClientError as exc:
             logger.error("VetFlow image upload connection error: %s", exc)
             return False
+        finally:
+            for handle in file_handles:
+                handle.close()
+
+    async def send_imaging_study(
+        self,
+        meta: dict,
+        dcm_path: Path,
+        jpeg_path: Path | None = None,
+    ) -> int | None:
+        """Upload a DICOM imaging study (original .dcm + optional JPEG derivative).
+
+        Multipart: `meta` fields (patient_id, modality, study_uid, sop_uid, ...) +
+        the `.dcm` file + optional `.jpg` derivative. Server dedups on sop_uid.
+        Returns the imaging_study id on success, None on failure.
+        """
+        endpoint = f"{self.url}/api/clinic/imaging/import-external"
+        file_handles = []
+        try:
+            data = aiohttp.FormData()
+            for key, value in meta.items():
+                if value is not None:
+                    data.add_field(key, str(value))
+
+            dcm_handle = open(dcm_path, "rb")
+            file_handles.append(dcm_handle)
+            data.add_field(
+                "dcm", dcm_handle, filename=dcm_path.name,
+                content_type="application/dicom",
+            )
+            if jpeg_path is not None and Path(jpeg_path).exists():
+                jpeg_handle = open(jpeg_path, "rb")
+                file_handles.append(jpeg_handle)
+                data.add_field(
+                    "jpeg", jpeg_handle, filename=Path(jpeg_path).name,
+                    content_type="image/jpeg",
+                )
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    endpoint,
+                    data=data,
+                    headers=self._legacy_headers,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as response:
+                    if response.status in (200, 201):
+                        body = await self._read_json(response)
+                        return body.get("id")
+                    text = await response.text()
+                    logger.error("VetFlow imaging upload error %d: %s", response.status, text[:500])
+                    return None
+        except aiohttp.ClientError as exc:
+            logger.error("VetFlow imaging upload connection error: %s", exc)
+            return None
         finally:
             for handle in file_handles:
                 handle.close()

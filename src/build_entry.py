@@ -20,6 +20,7 @@ import core.tray  # noqa: F401
 import hl7_listener  # noqa: F401
 import hl7_parser  # noqa: F401
 import plugins.skyla.plugin  # noqa: F401
+import plugins.dicom.plugin  # noqa: F401
 import setup_wizard  # noqa: F401
 import tray  # noqa: F401
 import vetflow_client  # noqa: F401
