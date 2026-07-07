@@ -1,0 +1,5 @@
+# VETFL-662: pluginy są weryfikowane przez files_hash (hash bajtów wszystkich plików
+# pluginu przy weryfikacji podpisu). Build leci na windows-latest — bez tego git mógłby
+# zrobić checkout .py/.md z CRLF, a manifest jest podpisany na LF → hash się rozjeżdża →
+# status TAMPERED mimo poprawnego podpisu. Wymuszamy LF na plikach pluginów wszędzie.
+src/plugins/** text eol=lf

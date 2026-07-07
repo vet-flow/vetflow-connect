@@ -1,0 +1,12 @@
+{
+  "author": "VetFlow",
+  "device_serial": "*",
+  "display_name": "Skyla",
+  "expires_at": null,
+  "files_hash": "sha256:dbcc97c709f6eb0bb9453203f1824b9673bc7b27dc13b019c1da8052bc8436a3",
+  "license_type": "open",
+  "name": "skyla",
+  "partner_id": "vetflow",
+  "signed_at": "2026-07-07T10:33:24.505455Z",
+  "version": "1.0.0"
+}
