@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 import logging
+import ssl
 from pathlib import Path
 
 import aiohttp
+import certifi
 
 logger = logging.getLogger("vetflow_connect")
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """CA bundle odporny na frozen .exe: certifi (zawsze zbundlowane) + sklep OS.
+
+    PyInstaller .exe nie może polegać na tym, że Python znajdzie systemowy CA-bundle,
+    a Windows dociąga część root-certów dopiero on-demand przez schannel (przeglądarka
+    działa, Python nie) → "unable to get local issuer certificate". Seedujemy kontekst
+    z certifi, a dodatkowo doładowujemy magazyn OS, żeby korporacyjne/antywirusowe
+    roota MITM (obecne tylko w sklepie Windows) też się weryfikowały.
+    """
+    context = ssl.create_default_context(cafile=certifi.where())
+    try:
+        context.load_default_certs(ssl.Purpose.SERVER_AUTH)
+    except Exception:  # pragma: no cover — sklep OS opcjonalny
+        logger.debug("Nie udało się doładować systemowego magazynu certyfikatów", exc_info=True)
+    return context
 
 
 class VetFlowClient:
@@ -16,6 +35,13 @@ class VetFlowClient:
     def __init__(self, url: str, api_key: str) -> None:
         self.url = url.rstrip("/")
         self.api_key = api_key
+        self._ssl_context = _build_ssl_context()
+
+    def _session(self) -> aiohttp.ClientSession:
+        """ClientSession z jawnym kontekstem SSL (certifi + sklep OS)."""
+        return aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(ssl=self._ssl_context)
+        )
 
     @property
     def _bearer_headers(self) -> dict[str, str]:
@@ -29,7 +55,7 @@ class VetFlowClient:
         """Verify API key and fetch basic clinic info."""
         endpoint = f"{self.url}/api/device/register"
         payload = {"api_key": self.api_key}
-        async with aiohttp.ClientSession() as session:
+        async with self._session() as session:
             async with session.post(
                 endpoint,
                 json=payload,
@@ -44,7 +70,7 @@ class VetFlowClient:
     async def get_device_config(self) -> dict:
         """Fetch remote device/plugin configuration."""
         endpoint = f"{self.url}/api/device/config"
-        async with aiohttp.ClientSession() as session:
+        async with self._session() as session:
             async with session.get(
                 endpoint,
                 headers=self._legacy_headers,
@@ -59,7 +85,7 @@ class VetFlowClient:
         """Send agent/plugin heartbeat to VetFlow."""
         endpoint = f"{self.url}/api/device/heartbeat"
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._session() as session:
                 async with session.post(
                     endpoint,
                     json=payload,
@@ -100,7 +126,7 @@ class VetFlowClient:
                     content_type="image/jpeg",
                 )
 
-            async with aiohttp.ClientSession() as session:
+            async with self._session() as session:
                 async with session.post(
                     endpoint,
                     data=data,
@@ -153,7 +179,7 @@ class VetFlowClient:
                     content_type="image/jpeg",
                 )
 
-            async with aiohttp.ClientSession() as session:
+            async with self._session() as session:
                 async with session.post(
                     endpoint,
                     data=data,
@@ -190,7 +216,7 @@ class VetFlowClient:
         headers: dict[str, str],
     ) -> int | None:
         try:
-            async with aiohttp.ClientSession() as session:
+            async with self._session() as session:
                 async with session.post(
                     endpoint,
                     json=payload,
