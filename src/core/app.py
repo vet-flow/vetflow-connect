@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .api_client import VetFlowClient
 from .auto_discover import discover_devices
+from .autostart import ensure_autostart
 from .config import (
     DEFAULT_CONFIG_PATH,
     Config,
@@ -297,6 +298,10 @@ def main() -> None:
     if args.discover:
         asyncio.run(run_discover())
         return
+
+    # VETFL-658: zarejestruj autostart przy logowaniu (Windows .exe) — po restarcie/zaniku prądu
+    # Connect wstaje sam, user nie musi go włączać. No-op w dev i poza Windows.
+    ensure_autostart()
 
     while True:
         config = _load_or_setup_config(args.config)
