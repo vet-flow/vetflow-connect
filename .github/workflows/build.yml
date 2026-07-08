@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           cd src
-          pyinstaller --onefile --name VetFlowConnect --icon ../icon.ico --add-data "../config.json.example;." --add-data "plugins;plugins" --paths . --noconsole --hidden-import pystray --hidden-import pystray._win32 --hidden-import PIL --hidden-import PIL.Image --collect-all numpy --collect-all pynetdicom --collect-all pydicom --collect-data certifi --collect-all cryptography build_entry.py
+          pyinstaller --onefile --name VetFlowConnect --icon ../icon.ico --add-data "../config.json.example;." --add-data "plugins;plugins" --paths . --noconsole --hidden-import pystray --hidden-import pystray._win32 --collect-all PIL --collect-all numpy --collect-all pynetdicom --collect-all pydicom --collect-data certifi --collect-all cryptography build_entry.py
 
       - name: Generate SHA256
         shell: bash
