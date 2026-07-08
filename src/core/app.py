@@ -27,7 +27,7 @@ from .plugin_loader import PluginLoader
 from .tray import TrayApp
 
 logger = logging.getLogger("vetflow_connect")
-VERSION = "0.4.7"
+VERSION = "0.4.8"
 
 
 def setup_logging(config: Config) -> None:
@@ -121,6 +121,35 @@ class RuntimeController:
         if self._loop and self._stop_event and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._stop_event.set)
 
+    async def _connect_with_retry(self) -> bool:
+        """Ponawiaj register_device + get_device_config aż się uda. Autostart (Run key)
+        przy logowaniu wstaje szybciej niż sieć — 1. próba pada, więc backoff 2→30s w
+        nieskończoność (connect ma się w końcu połączyć). False = zażądano stopu w trakcie."""
+        delay = 2
+        attempt = 0
+        while self._stop_event is None or not self._stop_event.is_set():
+            attempt += 1
+            try:
+                self.clinic_info = await self.client.register_device()
+                self.remote_config = await self.client.get_device_config()
+                return True
+            except Exception as exc:  # noqa: BLE001 — każdy błąd (sieć/DNS/serwer) = ponów
+                logger.warning(
+                    "Połączenie z VetFlow nieudane (próba %d): %s — ponawiam za %ds",
+                    attempt, exc, delay,
+                )
+                self.tray.set_status(False, f"Łączenie z VetFlow… (próba {attempt})")
+                if self._stop_event is None:
+                    await asyncio.sleep(delay)
+                else:
+                    try:  # przerywalny backoff — stop kończy natychmiast
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
+                        return False
+                    except asyncio.TimeoutError:
+                        pass
+                delay = min(delay * 2, 30)
+        return False
+
     async def _run(self) -> None:
         try:
             setup_logging(self.config)
@@ -129,8 +158,11 @@ class RuntimeController:
             logger.info("VetFlow URL: %s", self.config.url)
             logger.info("=" * 60)
 
-            self.clinic_info = await self.client.register_device()
-            self.remote_config = await self.client.get_device_config()
+            # VETFL-671: reconnect z backoffem — autostart (Run key) przy logowaniu wstaje
+            # SZYBCIEJ niż sieć, więc register_device pada; zamiast poddać się (czerwony na
+            # stałe) ponawiamy aż sieć wstanie. False = zażądano stopu w trakcie łączenia.
+            if not await self._connect_with_retry():
+                return
             clinic_name = (
                 self.remote_config.get("clinic_name")
                 or self.clinic_info.get("clinic_name")
