@@ -18,6 +18,7 @@ from .config import (
     DEFAULT_CONFIG_PATH,
     Config,
     ConfigNotFoundError,
+    app_dir,
     clear_config,
     load_config,
 )
@@ -43,13 +44,26 @@ def setup_logging(config: Config) -> None:
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(logging.INFO)
     console.setFormatter(formatter)
-
-    file_handler = logging.FileHandler(config.log_file, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-
     root_logger.addHandler(console)
-    root_logger.addHandler(file_handler)
+
+    # VETFL-671: log MUSI iść obok .exe (app_dir), nie względem CWD. Autostart (Run key)
+    # startuje proces z CWD=C:\Windows\system32 → zapis względnej nazwy = PermissionError,
+    # a że setup_logging leci PIERWSZY w runtime, ubijał CAŁY start Connecta (Skyla nie
+    # łapana). Kotwiczymy ścieżkę do app_dir; plikowy log jest NIE-krytyczny — przy błędzie
+    # degradujemy do samej konsoli zamiast wywalać runtime.
+    log_path = Path(config.log_file)
+    if not log_path.is_absolute():
+        log_path = app_dir() / log_path
+    try:
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+    except OSError as exc:
+        root_logger.warning(
+            "Nie udało się otworzyć pliku logu %s (%s) — loguję tylko na konsolę",
+            log_path, exc,
+        )
 
 
 class RuntimeController:
