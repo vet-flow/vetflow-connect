@@ -23,7 +23,12 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install pyinstaller aiohttp certifi pystray Pillow pynetdicom pydicom numpy cryptography
+        # VETFL-671: numpy PINNED do 1.26.4. numpy 2.x przeniósł rdzeń do numpy._core z
+        # binarką _multiarray_umath, której PyInstaller onefile nie bundluje niezawodnie
+        # (crash "No module named numpy._core._multiarray_umath" / brak _MEI...\numpy\_core
+        # na starcie). 1.26.4 = stara struktura numpy.core, żelazna z PyInstallerem,
+        # zgodna z pydicom/pynetdicom. Reszta świadomie niepinowana — pinuj gdy znów driftnie.
+        run: pip install pyinstaller aiohttp certifi pystray Pillow pynetdicom pydicom "numpy==1.26.4" cryptography
 
       - name: Build EXE
         shell: bash
