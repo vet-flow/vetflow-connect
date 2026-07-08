@@ -30,33 +30,41 @@ jobs:
         # zgodna z pydicom/pynetdicom. Reszta świadomie niepinowana — pinuj gdy znów driftnie.
         run: pip install pyinstaller aiohttp certifi pystray Pillow pynetdicom pydicom "numpy==1.26.4" cryptography
 
-      - name: Build EXE
+      - name: Build (onedir)
         shell: bash
+        # VETFL-671: --onedir zamiast --onefile. Onefile rozpakowuje CAŁY bundle do
+        # %TEMP%\_MEI... przy KAŻDYM starcie — na Windows z antywirusem ta rozpakówka
+        # bywa przerywana (crash "path not found" na numpy/PIL przy 1. odpaleniu, działa
+        # dopiero za 2.). Zabójcze dla autostartu na recepcji (brak człowieka by kliknąć
+        # 2. raz). Onedir = rozpakowane RAZ do stałego folderu → deterministyczny start.
+        # + hidden-import PIL.features: pydicom pillow-decoder go wymaga (patrz komentarz niżej).
         run: |
           cd src
-          pyinstaller --onefile --name VetFlowConnect --icon ../icon.ico --add-data "../config.json.example;." --add-data "plugins;plugins" --paths . --noconsole --hidden-import pystray --hidden-import pystray._win32 --collect-all PIL --collect-all numpy --collect-all pynetdicom --collect-all pydicom --collect-data certifi --collect-all cryptography build_entry.py
+          pyinstaller --onedir --name VetFlowConnect --icon ../icon.ico --add-data "../config.json.example;." --add-data "plugins;plugins" --paths . --noconsole --hidden-import pystray --hidden-import pystray._win32 --hidden-import PIL.features --collect-all PIL --collect-all numpy --collect-all pynetdicom --collect-all pydicom --collect-data certifi --collect-all cryptography build_entry.py
 
-      - name: Generate SHA256
-        shell: bash
+      - name: Package (zip onedir) + SHA256
+        shell: pwsh
         run: |
           cd src/dist
-          sha256sum VetFlowConnect.exe > VetFlowConnect.exe.sha256
-          cat VetFlowConnect.exe.sha256
+          Compress-Archive -Path VetFlowConnect -DestinationPath VetFlowConnect-windows.zip -Force
+          $h = (Get-FileHash VetFlowConnect-windows.zip -Algorithm SHA256).Hash.ToLower()
+          "$h *VetFlowConnect-windows.zip" | Out-File -Encoding ascii VetFlowConnect-windows.zip.sha256
+          Get-Content VetFlowConnect-windows.zip.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: VetFlowConnect-Windows
           path: |
-            src/dist/VetFlowConnect.exe
-            src/dist/VetFlowConnect.exe.sha256
+            src/dist/VetFlowConnect-windows.zip
+            src/dist/VetFlowConnect-windows.zip.sha256
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src/dist/VetFlowConnect.exe
-            src/dist/VetFlowConnect.exe.sha256
+            src/dist/VetFlowConnect-windows.zip
+            src/dist/VetFlowConnect-windows.zip.sha256
             config.json.example
           generate_release_notes: true
