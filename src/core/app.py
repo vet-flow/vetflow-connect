@@ -27,7 +27,7 @@ from .plugin_loader import PluginLoader
 from .tray import TrayApp
 
 logger = logging.getLogger("vetflow_connect")
-VERSION = "0.4.9"
+VERSION = "0.5.0"
 
 
 def setup_logging(config: Config) -> None:
