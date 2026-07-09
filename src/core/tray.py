@@ -23,8 +23,13 @@ COLOR_RED = "#ef4444"
 COLOR_YELLOW = "#f59e0b"
 
 
-def create_status_icon(color: str):
-    """Create a small colored tray icon."""
+COLOR_UPDATE = "#f97316"  # pomarańczowy badge = dostępna aktualizacja
+
+
+def create_status_icon(color: str, update: bool = False):
+    """Ikona tray'a: kolorowe kółko + „V". Gdy update=True dorysowuje pomarańczowy
+    badge ze strzałką „↑" w prawym-górnym rogu = dostępna aktualizacja (widać na ikonie,
+    bez otwierania menu)."""
     if Image is None or ImageDraw is None or ImageFont is None:
         raise RuntimeError("pystray and Pillow are required for tray support")
 
@@ -37,6 +42,19 @@ def create_status_icon(color: str):
     except OSError:
         font = ImageFont.load_default()
     draw.text((size // 2, size // 2), "V", fill="white", anchor="mm", font=font)
+
+    if update:
+        r = 26  # badge w prawym-górnym rogu
+        draw.ellipse([size - r - 1, 1, size - 1, r + 1], fill=COLOR_UPDATE, outline="white", width=3)
+        try:
+            bfont = ImageFont.truetype("arialbd.ttf", 20)
+        except OSError:
+            try:
+                bfont = ImageFont.truetype("arial.ttf", 20)
+            except OSError:
+                bfont = ImageFont.load_default()
+        cx = size - 1 - r / 2
+        draw.text((cx, r / 2 + 1), "↑", fill="white", anchor="mm", font=bfont)
     return image
 
 
@@ -64,6 +82,7 @@ class TrayApp:
         self._icon = None
         self._update_version: str | None = None
         self._update_url: str | None = None
+        self._current_color = COLOR_YELLOW  # bazowy kolor ikony (badge dokładany osobno)
 
     def _menu_items(self):
         if pystray is None:
@@ -144,11 +163,16 @@ class TrayApp:
             self._icon.menu = self._build_menu()
             self._icon.update_menu()
 
+    def _apply_icon(self) -> None:
+        """Przerysuj ikonę: bazowy kolor (status połączenia) + badge gdy jest aktualizacja."""
+        if self._icon:
+            self._icon.icon = create_status_icon(self._current_color, update=bool(self._update_url))
+
     def set_status(self, ok: bool, text: str | None = None) -> None:
         self._status_text = text or ("Połączono" if ok else "Błąd połączenia")
-        color = COLOR_GREEN if ok else COLOR_RED
+        self._current_color = COLOR_GREEN if ok else COLOR_RED
         if self._icon:
-            self._icon.icon = create_status_icon(color)
+            self._apply_icon()
             self._refresh_menu()
 
     def set_connection(self, clinic_name: str, ok: bool = True, text: str | None = None) -> None:
@@ -177,6 +201,7 @@ class TrayApp:
             return  # już pokazane — nie spamuj powiadomieniem co sprawdzenie
         self._update_version = version
         self._update_url = url
+        self._apply_icon()  # pomarańczowy badge „↑" na ikonie = widać update bez menu
         self._refresh_menu()
         self.notify("VetFlowConnect", f"Dostępna nowa wersja v{version} — menu → Zaktualizuj")
 
