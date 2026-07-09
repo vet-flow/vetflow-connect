@@ -49,17 +49,21 @@ class TrayApp:
         on_quit: Callable[[], None],
         on_logout: Callable[[], None],
         on_open_settings: Callable[[], None] | None = None,
+        on_update: Callable[[], None] | None = None,
         log_file: str | None = None,
     ) -> None:
         self._on_quit = on_quit
         self._on_logout = on_logout
         self._on_open_settings = on_open_settings
+        self._on_update = on_update
         self._log_file = log_file
         self._status_text = "Uruchamianie..."
         self._clinic_name = ""
         self._plugin_statuses: list[dict] = []
         self._settings_url: str | None = None
         self._icon = None
+        self._update_version: str | None = None
+        self._update_url: str | None = None
 
     def _menu_items(self):
         if pystray is None:
@@ -75,6 +79,12 @@ class TrayApp:
                     None,
                     enabled=False,
                 )
+            )
+
+        if self._update_url:
+            items.append(pystray.Menu.SEPARATOR)
+            items.append(
+                pystray.MenuItem(f"⬆ Zaktualizuj do v{self._update_version}", self._do_update)
             )
 
         if self._plugin_statuses:
@@ -148,6 +158,21 @@ class TrayApp:
     def notify(self, title: str, message: str) -> None:
         if self._icon:
             self._icon.notify(message, title)
+
+    def _do_update(self, *_args) -> None:
+        logger.info("Tray: aktualizacja zażądana → v%s", self._update_version)
+        if self._on_update is not None:
+            self._on_update()
+
+    def set_update_available(self, version: str, url: str) -> None:
+        # url = bezpośredni link do zip nowej wersji; przycisk w menu odpala on_update.
+        if version == self._update_version:
+            return  # już pokazane — nie spamuj powiadomieniem co sprawdzenie
+        self._update_version = version
+        self._update_url = url
+        if self._icon:
+            self._icon.update_menu()
+        self.notify("VetFlowConnect", f"Dostępna nowa wersja v{version} — menu → Zaktualizuj")
 
     def run(self, setup: Callable | None = None) -> None:
         if pystray is None:

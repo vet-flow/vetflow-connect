@@ -25,6 +25,7 @@ import core.plugin_base  # noqa: F401
 import core.plugin_loader  # noqa: F401
 import core.plugin_manifest  # noqa: F401
 import core.tray  # noqa: F401
+import core.updater  # noqa: F401
 import plugins.dicom.plugin  # noqa: F401
 import plugins.skyla.plugin  # noqa: F401
 import setup_wizard  # noqa: F401

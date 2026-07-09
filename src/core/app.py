@@ -27,7 +27,7 @@ from .plugin_loader import PluginLoader
 from .tray import TrayApp
 
 logger = logging.getLogger("vetflow_connect")
-VERSION = "0.4.8"
+VERSION = "0.4.9"
 
 
 def setup_logging(config: Config) -> None:
@@ -91,6 +91,7 @@ class RuntimeController:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_event: asyncio.Event | None = None
         self._heartbeat_task: asyncio.Task | None = None
+        self._pending_update: tuple[str, str, str] | None = None  # (wersja, url_zip, url_sha)
 
     def run_in_thread(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -150,6 +151,45 @@ class RuntimeController:
                 delay = min(delay * 2, 30)
         return False
 
+    async def _check_for_update(self) -> None:
+        """Best-effort: nowsza wersja na GitHub → pokaż przycisk Zaktualizuj w tray'u.
+        Nigdy nie wywala runtime (sieć/GitHub mogą paść — łapiemy wszystko)."""
+        try:
+            from . import updater
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, updater.check_latest, VERSION)
+            if result:
+                version, zip_url, sha_url = result
+                self._pending_update = (version, zip_url, sha_url)
+                logger.info("Dostępna aktualizacja: v%s", version)
+                self.tray.set_update_available(version, zip_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Sprawdzenie aktualizacji nieudane: %s", exc)
+
+    def trigger_update(self) -> None:
+        """Przycisk „Zaktualizuj" z tray'u (wątek pystray). Pobiera+weryfikuje+podmienia+
+        WYMUSZA zamknięcie i restart. Cała robota w osobnym wątku — nie blokuj tray'a."""
+        pending = self._pending_update
+        if not pending:
+            return
+        version, zip_url, sha_url = pending
+
+        def _worker() -> None:
+            from . import updater
+            try:
+                self.tray.notify("VetFlowConnect", f"Pobieram v{version}…")
+                self.tray.set_status(False, f"Aktualizuję do v{version}…")
+                staged = updater.download_and_stage(zip_url, sha_url)
+                self.tray.notify("VetFlowConnect", "Aktualizuję i restartuję…")
+                updater.launch_swap_and_exit(staged)
+                self.request_quit()  # wymuś zamknięcie → updater podmieni folder i odpali nowy .exe
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Aktualizacja nieudana")
+                self.tray.notify("VetFlowConnect", f"Aktualizacja nieudana: {exc}")
+                self.tray.set_status(True, "Nasłuchuje")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     async def _run(self) -> None:
         try:
             setup_logging(self.config)
@@ -176,6 +216,7 @@ class RuntimeController:
             await self._start_plugins()
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             self.tray.set_plugins(await self._plugin_statuses())
+            asyncio.create_task(self._check_for_update())  # sprawdź aktualizację przy starcie
 
             if self._stop_event is not None:
                 await self._stop_event.wait()
@@ -253,6 +294,8 @@ class RuntimeController:
     async def _heartbeat_loop(self) -> None:
         settings = self.remote_config.get("settings", {})
         interval = int(settings.get("heartbeat_interval", 60))
+        beats = 0
+        check_every = max(1, 3600 // max(1, interval))  # sprawdzaj aktualizację ~co godzinę
         while self._stop_event is not None and not self._stop_event.is_set():
             payload = {
                 "clinic_id": self.remote_config.get("clinic_id"),
@@ -261,6 +304,9 @@ class RuntimeController:
             }
             await self.client.send_heartbeat(payload)
             self.tray.set_plugins(payload["plugins"])
+            beats += 1
+            if beats % check_every == 0:
+                await self._check_for_update()
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -366,6 +412,7 @@ def main() -> None:
             on_quit=on_quit,
             on_logout=on_logout,
             on_open_settings=lambda: controller_holder["controller"].open_settings(),
+            on_update=lambda: controller_holder["controller"].trigger_update(),
             log_file=str(config.log_file),
         )
 
