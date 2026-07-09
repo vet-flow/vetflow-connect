@@ -14,7 +14,6 @@ Jak którykolwiek krok padnie → wyjątek, caller łapie, instalacja nietknięt
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import subprocess
 import sys
@@ -26,7 +25,6 @@ from pathlib import Path
 logger = logging.getLogger("vetflow_connect")
 
 _REPO = "vet-flow/vetflow-connect"
-_API = f"https://api.github.com/repos/{_REPO}/releases/latest"
 _ZIP = "VetFlowConnect-windows.zip"
 
 
@@ -42,13 +40,18 @@ def _parse(v: str) -> tuple[int, ...]:
 
 def check_latest(current: str) -> tuple[str, str, str] | None:
     """Zwraca (wersja, url_zip, url_sha) jeśli GitHub ma NOWSZY release niż `current`,
-    inaczej None. Best-effort — caller łapie wyjątki (sieć/GitHub)."""
+    inaczej None. Best-effort — caller łapie wyjątki (sieć/GitHub).
+
+    Ustala wersję przez REDIRECT github.com/releases/latest → .../releases/tag/vX.Y.Z,
+    NIE przez api.github.com (ten bywa wolny/blokowany na sieciach klinik i timeoutuje;
+    sam github.com jest osiągalny, bo stamtąd lecą pobrania). Timeout 20s (wolne sieci)."""
     req = urllib.request.Request(
-        _API, headers={"User-Agent": "VetFlowConnect", "Accept": "application/vnd.github+json"}
+        f"https://github.com/{_REPO}/releases/latest",
+        headers={"User-Agent": "VetFlowConnect"},
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.load(resp)
-    tag = str(data.get("tag_name", "")).strip()
+    with urllib.request.urlopen(req, timeout=20) as resp:  # podąża za 302, body nie czytamy
+        final = resp.geturl()
+    tag = final.rstrip("/").rsplit("/", 1)[-1].strip()  # .../tag/vX.Y.Z → vX.Y.Z
     if not tag or not _parse(tag) or _parse(tag) <= _parse(current):
         return None
     base = f"https://github.com/{_REPO}/releases/download/{tag}"

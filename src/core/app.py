@@ -27,7 +27,7 @@ from .plugin_loader import PluginLoader
 from .tray import TrayApp
 
 logger = logging.getLogger("vetflow_connect")
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 
 def setup_logging(config: Config) -> None:
@@ -153,18 +153,21 @@ class RuntimeController:
 
     async def _check_for_update(self) -> None:
         """Best-effort: nowsza wersja na GitHub → pokaż przycisk Zaktualizuj w tray'u.
-        Nigdy nie wywala runtime (sieć/GitHub mogą paść — łapiemy wszystko)."""
-        try:
-            from . import updater
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, updater.check_latest, VERSION)
-            if result:
-                version, zip_url, sha_url = result
-                self._pending_update = (version, zip_url, sha_url)
-                logger.info("Dostępna aktualizacja: v%s", version)
-                self.tray.set_update_available(version, zip_url)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Sprawdzenie aktualizacji nieudane: %s", exc)
+        Retry 3× po 15s (wolne sieci klinik potrafią timeoutować 1. próbę). Nie wywala runtime."""
+        from . import updater
+        loop = asyncio.get_event_loop()
+        for attempt in range(3):
+            try:
+                result = await loop.run_in_executor(None, updater.check_latest, VERSION)
+                if result:
+                    version, zip_url, sha_url = result
+                    self._pending_update = (version, zip_url, sha_url)
+                    logger.info("Dostępna aktualizacja: v%s", version)
+                    self.tray.set_update_available(version, zip_url)
+                return  # sukces (także gdy brak nowszej wersji) — koniec
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Sprawdzenie aktualizacji nieudane (próba %d): %s", attempt + 1, exc)
+                await asyncio.sleep(15)
 
     def trigger_update(self) -> None:
         """Przycisk „Zaktualizuj" z tray'u (wątek pystray). Pobiera+weryfikuje+podmienia+
