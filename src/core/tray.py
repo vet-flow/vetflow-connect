@@ -136,12 +136,20 @@ class TrayApp:
         elif self._settings_url:
             webbrowser.open(self._settings_url)
 
+    def _refresh_menu(self) -> None:
+        """Przebuduj menu — statyczne pystray.Menu nie DODA nowej pozycji przez samo
+        update_menu() (np. przycisku „Zaktualizuj" ani statusów pluginów dodanych po
+        starcie). Trzeba podmienić obiekt menu i dopiero odświeżyć."""
+        if self._icon:
+            self._icon.menu = self._build_menu()
+            self._icon.update_menu()
+
     def set_status(self, ok: bool, text: str | None = None) -> None:
         self._status_text = text or ("Połączono" if ok else "Błąd połączenia")
         color = COLOR_GREEN if ok else COLOR_RED
         if self._icon:
             self._icon.icon = create_status_icon(color)
-            self._icon.update_menu()
+            self._refresh_menu()
 
     def set_connection(self, clinic_name: str, ok: bool = True, text: str | None = None) -> None:
         self._clinic_name = clinic_name
@@ -149,8 +157,7 @@ class TrayApp:
 
     def set_plugins(self, plugin_statuses: list[dict]) -> None:
         self._plugin_statuses = plugin_statuses
-        if self._icon:
-            self._icon.update_menu()
+        self._refresh_menu()
 
     def set_settings_url(self, url: str) -> None:
         self._settings_url = url
@@ -170,8 +177,7 @@ class TrayApp:
             return  # już pokazane — nie spamuj powiadomieniem co sprawdzenie
         self._update_version = version
         self._update_url = url
-        if self._icon:
-            self._icon.update_menu()
+        self._refresh_menu()
         self.notify("VetFlowConnect", f"Dostępna nowa wersja v{version} — menu → Zaktualizuj")
 
     def run(self, setup: Callable | None = None) -> None:
