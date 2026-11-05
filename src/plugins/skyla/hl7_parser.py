@@ -11,7 +11,6 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 
 logger = logging.getLogger("vetflow_connect")
 
@@ -48,10 +47,9 @@ class HL7Message:
     patient: HL7Patient = field(default_factory=HL7Patient)
     panel_name: str = ""
     results: list[HL7Result] = field(default_factory=list)
-
-
-def _runtime_dir() -> Path:
-    return Path(__file__).resolve().parents[2]
+    # VETFL-975: obrazy (histogramy, wykresy) z OBX typu ED — (nazwa pliku, bajty JPEG) TEJ wiadomości.
+    # Parser nie zapisuje ich do wspólnego katalogu: wtyczka wysyła je tylko do wyniku tego pacjenta.
+    images: list[tuple[str, bytes]] = field(default_factory=list)
 
 
 def _split_field(field_value: str, separator: str = "^") -> list[str]:
@@ -139,7 +137,6 @@ def _parse_obx(fields: list[str]) -> HL7Result | None:
     value_type = _get_field(fields, 2)
 
     if value_type == "ED":
-        _save_ed_segment(fields, sequence)
         return None
 
     if value_type == "TX":
@@ -167,28 +164,35 @@ def _parse_obx(fields: list[str]) -> HL7Result | None:
     )
 
 
-def _save_ed_segment(fields: list[str], sequence: str) -> None:
+def _decode_ed_image(fields: list[str]) -> tuple[str, bytes] | None:
+    """Obraz z OBX typu ED jako (nazwa pliku .jpg, bajty JPEG); None, gdy segment nie niesie obrazu."""
+    sequence = _get_field(fields, 1)
     # SH50 w przykładzie producenta potrafi wstawić dane o pole wcześniej (OBX-4 zamiast OBX-5).
     raw_data = _get_field(fields, 5) or _get_field(fields, 4)
+    if not raw_data or "^" not in raw_data:
+        logger.debug("OBX ED (seq %s) bez danych obrazu — zostaje tylko w surowej wiadomości", sequence)
+        return None
     try:
         import base64
 
-        image_dir = _runtime_dir() / "captured_images"
-        image_dir.mkdir(exist_ok=True)
-
-        if raw_data and "^" in raw_data:
-            # Dane obrazu to ostatni składnik („^dane” albo „skyla SH50^Image^BMP^Base64^dane”).
-            b64_data = raw_data.rsplit("^", 1)[1].strip()
-            image_bytes = base64.b64decode(b64_data)
-            if image_bytes[:2] == b"BM":
-                image_bytes = _bmp_to_jpeg(image_bytes)
-            param_parts = _split_field(_get_field(fields, 3))
-            image_type = param_parts[0] if param_parts else f"img_{sequence}"
-            (image_dir / f"{image_type}_seq{sequence}.jpg").write_bytes(image_bytes)
-        else:
-            (image_dir / f"ed_segment_{sequence}.txt").write_text("|".join(fields), encoding="utf-8")
+        # Dane obrazu to ostatni składnik („^dane” albo „skyla SH50^Image^BMP^Base64^dane”).
+        b64_data = raw_data.rsplit("^", 1)[1].strip()
+        image_bytes = base64.b64decode(b64_data)
+        if image_bytes[:2] == b"BM":
+            image_bytes = _bmp_to_jpeg(image_bytes)
     except Exception as exc:
-        logger.warning("Could not decode/save ED segment %s: %s", sequence, exc)
+        logger.warning("Could not decode ED segment %s: %s", sequence, exc)
+        return None
+    if not image_bytes:
+        return None
+    param_parts = _split_field(_get_field(fields, 3))
+    image_type = _safe_name(param_parts[0] if param_parts else "") or "img"
+    return f"{image_type}_seq{_safe_name(sequence) or '0'}.jpg", image_bytes
+
+
+def _safe_name(value: str) -> str:
+    """Nazwa z pola urządzenia jako bezpieczny fragment nazwy pliku (bez separatorów ścieżek)."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", value.strip()).strip("._")[:60]
 
 
 def _bmp_to_jpeg(bmp_bytes: bytes) -> bytes:
@@ -236,6 +240,11 @@ def parse_hl7(message: str) -> HL7Message:
             # SH50: OBR-4 to opis urządzenia („AUTO ANALIZADOR HEMATOLÓGICO 5 DIF skyla SH50”), nie panel.
             result.panel_name = "CBC" if result.device == "SH50" else _parse_obr(fields)
         elif segment.startswith("OBX"):
+            if _get_field(fields, 2) == "ED":
+                image = _decode_ed_image(fields)
+                if image is not None:
+                    result.images.append(image)
+                continue
             obx = _parse_obx(fields)
             if obx is not None:
                 result.results.append(obx)
@@ -244,12 +253,13 @@ def parse_hl7(message: str) -> HL7Message:
         logger.warning("No MSH segment found in message")
 
     logger.info(
-        "Parsed %s %s: patient=%s, panel=%s, %d results",
+        "Parsed %s %s: patient=%s, panel=%s, %d results, %d images",
         result.device,
         result.device_type,
         result.patient.name,
         result.panel_name,
         len(result.results),
+        len(result.images),
     )
     return result
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -91,9 +93,10 @@ class SkylaPlugin(DevicePlugin):
             panels=panels,
             raw_message=raw_message,
         )
-        await self.on_lab_result(data)
+        await self.on_lab_result(data, images=parsed.images)
 
-    async def on_lab_result(self, data: LabResult) -> None:
+    async def on_lab_result(self, data: LabResult, images: list[tuple[str, bytes]] | None = None) -> None:
+        """Wysyła wynik do Vet-Flow, a do niego obrazy TEJ wiadomości (VETFL-975) — nigdy z innych badań."""
         if self.api_client is None:
             logger.warning("[%s] No API client configured, dropping result", self._device_config.get("name", self.display_name))
             await super().on_lab_result(data)
@@ -115,8 +118,9 @@ class SkylaPlugin(DevicePlugin):
             status,
         )
 
-        if lab_result_id:
-            await self._upload_images(lab_result_id)
+        image_paths = self._store_images(images or [], panel)
+        if lab_result_id and image_paths:
+            await self._upload_images(lab_result_id, image_paths)
 
         await super().on_lab_result(data)
 
@@ -152,20 +156,42 @@ class SkylaPlugin(DevicePlugin):
         except Exception:
             logger.debug("Failed to persist raw HL7 payload", exc_info=True)
 
-    async def _upload_images(self, lab_result_id: int) -> None:
-        image_dir = Path(app_dir()) / "captured_images"
-        if not image_dir.exists():
-            return
+    def _store_images(self, images: list[tuple[str, bytes]], panel: dict) -> list[Path]:
+        """Zapisuje obrazy jednej wiadomości do jej własnego podkatalogu pod app_dir().
 
-        jpg_files = sorted(image_dir.glob("*.jpg"))
-        if not jpg_files:
-            return
+        Podkatalog jest unikalny (czas + numer wiadomości + losowy sufiks), więc obrazy jednego pacjenta
+        nigdy nie trafią do wyniku innego. Pliki zostają jako kopia diagnostyczna i nie są wysyłane ponownie.
+        """
+        if not images:
+            return []
+        order = re.sub(r"[^A-Za-z0-9_-]", "_", str(panel.get("order_number") or ""))[:40]
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        folder = app_dir() / "captured_images" / f"{stamp}_{order or 'msg'}_{uuid.uuid4().hex[:8]}"
+        paths: list[Path] = []
+        try:
+            folder.mkdir(parents=True, exist_ok=False)
+            for index, (filename, image_bytes) in enumerate(images):
+                path = folder / filename
+                if path.exists():  # dwa ED o tym samym numerze sekwencji — nie nadpisuj
+                    path = folder / f"{index}_{filename}"
+                path.write_bytes(image_bytes)
+                paths.append(path)
+        except OSError:
+            logger.warning(
+                "[%s] Could not store images of message %s",
+                self._device_config.get("name", self.display_name),
+                order or "?",
+                exc_info=True,
+            )
+            return []
+        return paths
 
+    async def _upload_images(self, lab_result_id: int, image_paths: list[Path]) -> None:
         logger.info(
             "[%s] Uploading %d images for lab_result_id=%d",
             self._device_config.get("name", self.display_name),
-            len(jpg_files),
+            len(image_paths),
             lab_result_id,
         )
-        ok = await self.api_client.send_images(lab_result_id, jpg_files)
+        ok = await self.api_client.send_images(lab_result_id, image_paths)
         logger.info("[%s] Image upload %s", self._device_config.get("name", self.display_name), "OK" if ok else "FAIL")

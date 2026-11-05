@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import io
 
-from src.plugins.skyla import hl7_parser
 from src.plugins.skyla.hl7_parser import parse_hl7
 
 
@@ -34,8 +33,7 @@ def _message(bmp: str = "Qk0=") -> str:
     ]) + "\r"
 
 
-def test_sh50_recognised_as_cbc_not_tutti(tmp_path, monkeypatch):
-    monkeypatch.setattr(hl7_parser, "_runtime_dir", lambda: tmp_path)
+def test_sh50_recognised_as_cbc_not_tutti():
     m = parse_hl7(_message())
     assert (m.device, m.device_type, m.panel_name) == ("SH50", "cbc", "CBC")
     assert (m.patient.patient_id, m.patient.name, m.patient.sex) == ("1010051", "Mary", "M")
@@ -45,12 +43,11 @@ def test_sh50_recognised_as_cbc_not_tutti(tmp_path, monkeypatch):
     assert r["HCT"].flag == "L"
 
 
-def test_sh50_bmp_histogram_saved_as_jpeg(tmp_path, monkeypatch):
-    monkeypatch.setattr(hl7_parser, "_runtime_dir", lambda: tmp_path)
-    parse_hl7(_message(_bmp_b64()))
-    [img] = (tmp_path / "captured_images").glob("*.jpg")
-    assert img.name == "RBCHistogram_seq25.jpg"
-    assert img.read_bytes()[:3] == b"\xff\xd8\xff", "BMP przekonwertowany na JPEG"
+def test_sh50_bmp_histogram_kept_on_message_as_jpeg():
+    m = parse_hl7(_message(_bmp_b64()))
+    [(name, data)] = m.images
+    assert name == "RBCHistogram_seq25.jpg"
+    assert data[:3] == b"\xff\xd8\xff", "BMP przekonwertowany na JPEG"
 
 
 def test_tutti_and_vm100_unchanged():
