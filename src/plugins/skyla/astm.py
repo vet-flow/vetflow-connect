@@ -119,7 +119,10 @@ async def handle_astm_session(
             data = await asyncio.wait_for(reader.read(65536), timeout=FRAME_TIMEOUT_S if in_message else None)
         except asyncio.TimeoutError:
             logger.warning("[%s] ASTM: no frame for %ds, dropping incomplete message", device_name, FRAME_TIMEOUT_S)
+            # Razem z ramkami wyrzucamy niedokończoną ramkę z bufora — inaczej doklei się do następnej
+            # wiadomości (uwaga CodeAnt #13).
             frames, in_message = [], False
+            buffer.clear()
             continue
         if not data:
             return

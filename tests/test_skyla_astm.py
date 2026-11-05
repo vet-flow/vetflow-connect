@@ -333,3 +333,56 @@ async def test_plugin_stop_does_not_wait_for_connected_analyzer(tmp_path, monkey
         await asyncio.wait_for(plugin.stop(), 3)
     finally:
         writer.close()
+
+
+@pytest.mark.asyncio
+async def test_timeout_drops_partial_frame_from_buffer(monkeypatch):
+    """Uwaga CodeAnt #13: po przekroczeniu czasu niedokończona ramka nie może skleić się z następną wiadomością."""
+    import src.plugins.skyla.astm as astm
+
+    monkeypatch.setattr(astm, "FRAME_TIMEOUT_S", 0.2)
+    received: list[str] = []
+    server, port = await _serve(received)
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(ENQ)
+        await _expect(reader, ACK)
+        writer.write(b"\x021H|\\^&|||skyla Sol")  # urwana ramka, analizator zamilkł
+        await writer.drain()
+        await asyncio.sleep(0.4)
+        writer.write(ENQ)
+        await _expect(reader, ACK)
+        for frame in _frames(CONNECT):
+            writer.write(frame)
+            await _expect(reader, ACK)
+        writer.write(bytes([EOT]))
+        await writer.drain()
+        for _ in range(50):
+            if received:
+                break
+            await asyncio.sleep(0.02)
+        assert received == [CONNECT]
+    finally:
+        if "writer" in locals():
+            writer.close()
+        server.close()
+        await asyncio.wait_for(server.wait_closed(), 5)
+
+
+@pytest.mark.asyncio
+async def test_connection_accepted_during_stop_is_closed():
+    """Uwaga CodeAnt #13: połączenie, którego obsługa ruszy po close_clients(), też jest zamykane."""
+    listener = HL7Listener(device_name="Test")
+
+    async def nic(_text: str) -> None:
+        return None
+
+    server = await listener.start("127.0.0.1", 0, nic, astm_callback=nic)
+    listener.close_clients()  # zatrzymanie zaczęło się, zanim analizator się połączył
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.sockets[0].getsockname()[1])
+    try:
+        assert await asyncio.wait_for(reader.read(1), 2) == b"", "serwer od razu zamyka połączenie"
+        server.close()
+        await asyncio.wait_for(server.wait_closed(), 3)
+    finally:
+        writer.close()

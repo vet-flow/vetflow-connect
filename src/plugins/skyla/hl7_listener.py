@@ -29,11 +29,16 @@ class HL7Listener:
         self.device_name = device_name
         self._server: asyncio.AbstractServer | None = None
         self._clients: set[asyncio.StreamWriter] = set()
+        self._closing = False
 
     def close_clients(self) -> None:
         """Zamyka otwarte połączenia analizatorów. Solution trzyma połączenie między badaniami, a od
         Pythona 3.12 ``server.wait_closed()`` czeka na wszystkie połączenia — bez tego zatrzymanie
-        wtyczki (wyjście, samoaktualizacja) wisiałoby do rozłączenia analizatora (VETFL-967)."""
+        wtyczki (wyjście, samoaktualizacja) wisiałoby do rozłączenia analizatora (VETFL-967).
+
+        ``_closing`` zamyka też połączenie przyjęte tuż przed zatrzymaniem, którego obsługa ruszy
+        dopiero po tym wywołaniu (uwaga CodeAnt #13)."""
+        self._closing = True
         for writer in list(self._clients):
             writer.close()
 
@@ -60,6 +65,9 @@ class HL7Listener:
         astm_callback: MessageCallback | None = None,
     ) -> None:
         peer = writer.get_extra_info("peername")
+        if self._closing:
+            writer.close()
+            return
         logger.info("[%s] Connection from %s", self.device_name, peer)
         self._clients.add(writer)
 
