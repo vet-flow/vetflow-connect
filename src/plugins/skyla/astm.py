@@ -37,6 +37,10 @@ LF = 0x0A
 # Brak <ENQ>/ramki przez tyle sekund = analizator zamilkł w pół wiadomości — porzucamy niedokończoną
 # wiadomość, ale połączenie zostaje (Solution trzyma je otwarte między badaniami).
 FRAME_TIMEOUT_S = 30
+# Ramka E1381 ma najwyżej 247 znaków; więcej bez <ETX>/<ETB> to nie ramka — nie trzymamy tego w pamięci
+# w nieskończoność (uwaga CodeAnt #13). Cała wiadomość: pełny panel to kilkadziesiąt ramek.
+MAX_FRAME_BYTES = 1024
+MAX_MESSAGE_BYTES = 1024 * 1024
 
 AstmCallback = Callable[[str], Awaitable[None]]
 
@@ -65,6 +69,7 @@ async def handle_astm_session(
     buffer = bytearray(initial)
     frames: list[bytes] = []
     in_message = False
+    dropping = False  # wiadomość przekroczyła MAX_MESSAGE_BYTES — potwierdzamy ramki, ale ich nie składamy
 
     while True:
         progressed = True
@@ -75,13 +80,13 @@ async def handle_astm_session(
             first = buffer[0]
             if first == ENQ[0]:
                 del buffer[0]
-                frames, in_message = [], True
+                frames, in_message, dropping = [], True, False
                 writer.write(ACK)
                 await writer.drain()
                 progressed = True
             elif first == EOT:
                 del buffer[0]
-                if in_message and frames:
+                if in_message and frames and not dropping:
                     text = _decode(b"".join(frames))
                     try:
                         await callback(text)
@@ -92,6 +97,12 @@ async def handle_astm_session(
             elif first == STX:
                 end = next((i for i in range(1, len(buffer)) if buffer[i] in (ETX, ETB)), None)
                 # Ramka kompletna: <STX> ... <ETX|ETB> C1 C2 <CR> <LF>
+                if end is None and len(buffer) > MAX_FRAME_BYTES:
+                    logger.warning("[%s] ASTM: %d bytes without frame end — discarding", device_name, len(buffer))
+                    buffer.clear()
+                    writer.write(NAK)
+                    await writer.drain()
+                    break
                 if end is None or len(buffer) < end + 5:
                     break
                 body = bytes(buffer[1 : end + 1])  # FN … <ETB>/<ETX>
@@ -106,7 +117,11 @@ async def handle_astm_session(
                     logger.warning("[%s] ASTM checksum mismatch (got %r, want %r) — NAK", device_name, received, checksum(body))
                     writer.write(NAK)
                 else:
-                    frames.append(body[1:-1])  # bez numeru ramki i znaku końca
+                    if not dropping:
+                        frames.append(body[1:-1])  # bez numeru ramki i znaku końca
+                        if sum(len(f) for f in frames) > MAX_MESSAGE_BYTES:
+                            logger.warning("[%s] ASTM message over %d bytes — dropped", device_name, MAX_MESSAGE_BYTES)
+                            frames, dropping = [], True
                     writer.write(ACK)
                 await writer.drain()
                 progressed = True
@@ -199,10 +214,32 @@ def _flag_and_value(raw_value: str, abnormal: str, ref_raw: str) -> tuple[str, s
 
 
 def parse_astm(text: str) -> HL7Message:
-    """Wiadomość ASTM z Solution → ten sam obiekt co z HL7 (wtyczka wysyła go do Vet-Flow tak samo)."""
-    message = HL7Message()
-    message.hl7_version = "ASTM E1394"
-    panels: list[str] = []
+    """Cała wiadomość jako jeden obiekt (wszystkie panele razem) — do logów i testów."""
+    orders = parse_astm_orders(text)
+    message = orders[0]
+    for order in orders[1:]:
+        message.results = message.results + order.results
+    message.panel_name = ", ".join(dict.fromkeys(o.panel_name for o in orders if o.panel_name))
+    message.message_id = next((o.message_id for o in orders if o.message_id), "")
+    return message
+
+
+def parse_astm_orders(text: str) -> list[HL7Message]:
+    """Wiadomość ASTM → jeden obiekt na rekord O (panel), z tym samym nagłówkiem i pacjentem.
+
+    Tutti wysyła kilka paneli w jednej wiadomości (np. „General Chem 26” i „Electrolyte 7”) — każdy
+    idzie do Vet-Flow jako osobny wynik, jak z analizatora HL7 (uwaga CodeAnt #13). ``message_id``
+    to identyfikator zlecenia z rekordu O (Vet-Flow zapisuje go jako numer zlecenia), nie czas nagłówka.
+    """
+    base = HL7Message()
+    base.hl7_version = "ASTM E1394"
+    orders: list[HL7Message] = []
+
+    def current() -> HL7Message:
+        if not orders:
+            orders.append(_order_from(base, panel="", order_id=""))
+        return orders[-1]
+
     for record in re.split(r"\r\n|\r|\n", text):
         record = record.strip("\x00")
         if not record:
@@ -213,16 +250,13 @@ def parse_astm(text: str) -> HL7Message:
             sender = _field(fields, 5).split("^")
             name = sender[0].strip()
             low = name.lower()
-            message.device = "Solution" if "solution" in low else ("Tutti" if "tutti" in low else name or "Skyla")
-            message.device_type = "chemistry"
-            message.timestamp = _field(fields, 14)
-            message.message_id = _field(fields, 14)
-            if _field(fields, 12).upper() == "Q":
-                message.device_type = "qc"
+            base.device = "Solution" if "solution" in low else ("Tutti" if "tutti" in low else name or "Skyla")
+            base.device_type = "qc" if _field(fields, 12).upper() == "Q" else "chemistry"
+            base.timestamp = _field(fields, 14)
         elif kind == "P":
             species = _field(fields, 16).split("^")
             age = _field(fields, 8).split("^")  # „^5^Year”, w Tutti też „^2^Year^6^Month”
-            message.patient = HL7Patient(
+            base.patient = HL7Patient(
                 patient_id=_unescape(_field(fields, 4)),
                 name=_unescape(_field(fields, 6)),
                 species=_unescape(species[0]) if species else "",
@@ -235,11 +269,14 @@ def parse_astm(text: str) -> HL7Message:
             panel_field = next((f for f in fields[1:] if f.startswith("^^^")), "")
             parts = panel_field.split("^")
             panel = _unescape(parts[3].strip()) if len(parts) > 3 else ""
-            if panel and panel not in panels:
-                panels.append(panel)
-            message.panel_name = ", ".join(panels)
+            order_id = next(
+                (f.strip() for f in (_field(fields, 3), _field(fields, 4)) if f.strip() and not f.startswith("^")),
+                "",
+            )
+            order = _order_from(base, panel=panel, order_id=_unescape(order_id))
             if "Q" in (_field(fields, 12).upper(), _field(fields, 13).upper()):
-                message.device_type = "qc"
+                order.device_type = "qc"
+            orders.append(order)
         elif kind == "R":
             test_id = _field(fields, 3).split("^")
             marker = _unescape(test_id[3].strip()) if len(test_id) > 3 else ""
@@ -258,6 +295,7 @@ def parse_astm(text: str) -> HL7Message:
                 sequence = int(_field(fields, 2))
             except ValueError:
                 sequence = 0
+            message = current()
             message.results.append(
                 HL7Result(
                     sequence=sequence,
@@ -273,11 +311,23 @@ def parse_astm(text: str) -> HL7Message:
             if not message.timestamp:
                 message.timestamp = _field(fields, 13)
 
-    logger.info(
-        "Parsed ASTM %s: patient=%s, panel=%s, %d results",
-        message.device,
-        message.patient.name,
-        message.panel_name,
-        len(message.results),
+    if not orders:
+        orders.append(_order_from(base, panel="", order_id=""))
+    for order in orders:
+        logger.info(
+            "Parsed ASTM %s: patient=%s, panel=%s, order=%s, %d results",
+            order.device, order.patient.name, order.panel_name, order.message_id, len(order.results),
+        )
+    return orders
+
+
+def _order_from(base: HL7Message, *, panel: str, order_id: str) -> HL7Message:
+    return HL7Message(
+        device=base.device,
+        device_type=base.device_type,
+        hl7_version=base.hl7_version,
+        message_id=order_id,
+        timestamp=base.timestamp,
+        patient=base.patient,
+        panel_name=panel,
     )
-    return message

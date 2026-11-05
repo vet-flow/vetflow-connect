@@ -386,3 +386,62 @@ async def test_connection_accepted_during_stop_is_closed():
         await asyncio.wait_for(server.wait_closed(), 3)
     finally:
         writer.close()
+
+
+def test_orders_split_per_panel_with_order_id():
+    """Uwaga CodeAnt #13: każdy rekord O to osobny wynik; numer zlecenia z rekordu O, nie czas nagłówka."""
+    from src.plugins.skyla.astm import parse_astm_orders
+
+    chem, elektrolity = parse_astm_orders(TUTTI)
+    assert (chem.panel_name, chem.message_id, [r.name for r in chem.results]) == ("General Chem 26", "WL26032601", ["GLU", "TRIG"])
+    assert (elektrolity.panel_name, elektrolity.message_id, [r.name for r in elektrolity.results]) == ("Electrolyte 7", "WL26032602", ["Na"])
+    assert elektrolity.patient.name == "Luna", "nagłówek i pacjent wspólne dla paneli"
+    [solution] = parse_astm_orders(NORMAL)
+    assert solution.message_id == "", "Solution nie podaje numeru zlecenia — nie podstawiamy czasu"
+
+
+@pytest.mark.asyncio
+async def test_plugin_sends_each_tutti_panel_separately(tmp_path, monkeypatch):
+    import src.plugins.skyla.plugin as plugin_module
+
+    monkeypatch.setattr(plugin_module, "app_dir", lambda: tmp_path)
+    plugin = SkylaPlugin()
+    api = _FakeApi()
+    plugin.configure(api_client=api)
+    plugin._device_config = {"name": "Skyla Tutti"}
+    await plugin._handle_astm_message(TUTTI)
+    assert [(p["sample_type"], p["order_number"], sorted(p["results_json"])) for p in api.sent] == [
+        ("General Chem 26", "WL26032601", ["GLU", "TRIG"]),
+        ("Electrolyte 7", "WL26032602", ["Na"]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_endless_frame_is_discarded_not_buffered():
+    """Uwaga CodeAnt #13: <STX> bez końca ramki nie rośnie w pamięci bez limitu — NAK, połączenie działa dalej."""
+    received: list[str] = []
+    server, port = await _serve(received)
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(ENQ)
+        await _expect(reader, ACK)
+        writer.write(b"\x02" + b"x" * 5000)
+        await writer.drain()
+        await _expect(reader, NAK)
+        writer.write(ENQ)
+        await _expect(reader, ACK)
+        for frame in _frames(CONNECT):
+            writer.write(frame)
+            await _expect(reader, ACK)
+        writer.write(bytes([EOT]))
+        await writer.drain()
+        for _ in range(50):
+            if received:
+                break
+            await asyncio.sleep(0.02)
+        assert received == [CONNECT]
+    finally:
+        if "writer" in locals():
+            writer.close()
+        server.close()
+        await asyncio.wait_for(server.wait_closed(), 5)

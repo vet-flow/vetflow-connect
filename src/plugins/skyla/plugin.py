@@ -12,7 +12,7 @@ try:
 except ImportError:
     from core.config import app_dir
     from core.plugin_base import DevicePlugin, LabResult
-from .astm import parse_astm
+from .astm import parse_astm_orders
 from .hl7_listener import HL7Listener
 from .hl7_parser import HL7Message, parse_hl7
 
@@ -67,14 +67,17 @@ class SkylaPlugin(DevicePlugin):
     async def _handle_astm_message(self, raw_message: str) -> None:
         """VETFL-967: wiadomość ASTM (Skyla Solution). Statusy połączenia i kontrola jakości nie są wynikiem."""
         self._capture_raw(raw_message, prefix="astm")
-        parsed = parse_astm(raw_message)
-        if parsed.device_type == "qc":
-            logger.info("[%s] ASTM quality-control message, not sent to VetFlow", self._device_config.get("name", self.display_name))
+        orders = parse_astm_orders(raw_message)
+        device_name = self._device_config.get("name", self.display_name)
+        if not any(order.results for order in orders) and ("^Connect" in raw_message or "^Disconnect" in raw_message):
+            logger.info("[%s] ASTM connection status from %s", device_name, orders[0].device)
             return
-        if not parsed.results and ("^Connect" in raw_message or "^Disconnect" in raw_message):
-            logger.info("[%s] ASTM connection status from %s", self._device_config.get("name", self.display_name), parsed.device)
-            return
-        await self._send_parsed(parsed, raw_message)
+        # Każdy panel (rekord O) to osobny wynik w Vet-Flow — Tutti wysyła kilka w jednej wiadomości.
+        for order in orders:
+            if order.device_type == "qc":
+                logger.info("[%s] ASTM quality-control message, not sent to VetFlow", device_name)
+                continue
+            await self._send_parsed(order, raw_message)
 
     async def _send_parsed(self, parsed: HL7Message, raw_message: str) -> None:
         if not parsed.results:
