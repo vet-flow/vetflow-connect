@@ -1,0 +1,60 @@
+"""VETFL-967: Skyla SH50 (hematologia) przez HL7 — przykład z dokumentacji producenta.
+
+„SH50 HL7 External communication protocol”, A.4.1: MSH-3 „SKYLA”, MSH-4 „skyla SH50”. Wcześniej
+parser brał każde „skyla” za Tutti (biochemia) i czytał pacjenta z pól Tutti.
+"""
+
+from __future__ import annotations
+
+import base64
+import io
+
+from src.plugins.skyla import hl7_parser
+from src.plugins.skyla.hl7_parser import parse_hl7
+
+
+def _bmp_b64() -> str:
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (4, 3), (200, 30, 30)).save(out, format="BMP")
+    return base64.b64encode(out.getvalue()).decode()
+
+
+def _message(bmp: str = "Qk0=") -> str:
+    return "\r".join([
+        r"MSH|^~\&|SKYLA|skyla SH50|LIS|PC|20110627144458||ORU^R01|0001|P|2.3.1||||||UNICODE",
+        "PID|1|1010051|A1123145|15|Mary||19811011|M",
+        "PV1|1|||",
+        "OBR|1||BAR101010101|SKYLA^AUTO ANALIZADOR HEMATOLÓGICO 5 DIF skyla SH50||||01110621143134|||||^||||||||||||||||",
+        "OBX|1|NM|WBC||110.0|10^9/L|40.0-100.0|H|||F|||||||",
+        "OBX|2|NM|LYM||35.57|%|20.00-40.00||||F|||||||",
+        "OBX|14|NM|HCT||26.4|%|37.0-50.0|L|||F|||||||",
+        f"OBX|25|ED|RBCHistogram||skyla SH50^Image^BMP^Base64^{bmp}",
+    ]) + "\r"
+
+
+def test_sh50_recognised_as_cbc_not_tutti(tmp_path, monkeypatch):
+    monkeypatch.setattr(hl7_parser, "_runtime_dir", lambda: tmp_path)
+    m = parse_hl7(_message())
+    assert (m.device, m.device_type, m.panel_name) == ("SH50", "cbc", "CBC")
+    assert (m.patient.patient_id, m.patient.name, m.patient.sex) == ("1010051", "Mary", "M")
+    r = {x.name: x for x in m.results}
+    assert set(r) == {"WBC", "LYM", "HCT"}, "histogram (ED) nie jest parametrem"
+    assert (r["WBC"].value, r["WBC"].unit, r["WBC"].reference_range, r["WBC"].flag) == ("110.0", "10^9/L", "40.0-100.0", "H")
+    assert r["HCT"].flag == "L"
+
+
+def test_sh50_bmp_histogram_saved_as_jpeg(tmp_path, monkeypatch):
+    monkeypatch.setattr(hl7_parser, "_runtime_dir", lambda: tmp_path)
+    parse_hl7(_message(_bmp_b64()))
+    [img] = (tmp_path / "captured_images").glob("*.jpg")
+    assert img.name == "RBCHistogram_seq25.jpg"
+    assert img.read_bytes()[:3] == b"\xff\xd8\xff", "BMP przekonwertowany na JPEG"
+
+
+def test_tutti_and_vm100_unchanged():
+    from .mock_messages import TUTTI_CHEMISTRY, VM100_CBC
+
+    assert parse_hl7(TUTTI_CHEMISTRY).device == "Tutti"
+    assert parse_hl7(VM100_CBC).device == "VM100"
