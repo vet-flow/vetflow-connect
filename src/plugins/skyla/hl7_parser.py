@@ -1,4 +1,9 @@
-"""HL7 ORU^R01 parser for Skyla VM100 (CBC) and Tutti (Chemistry)."""
+"""HL7 ORU^R01 parser for Skyla VM100 (CBC), SH50 (CBC) and Tutti (Chemistry).
+
+SH50 (VETFL-967, dokumentacja „SH50 HL7 External communication protocol”): MSH-3 „SKYLA”, MSH-4
+„skyla SH50”; PID-2 numer pacjenta, PID-5 imię; histogramy i wykresy jako OBX typu ED
+„skyla SH50^Image^BMP^Base64^<dane>”.
+"""
 
 from __future__ import annotations
 
@@ -61,12 +66,17 @@ def _get_field(fields: list[str], index: int) -> str:
 
 def _parse_msh(fields: list[str]) -> dict:
     sending_app = _get_field(fields, 2)
+    sending_facility = _get_field(fields, 3)
     timestamp = _get_field(fields, 6)
     message_id = _get_field(fields, 9)
     version = _get_field(fields, 11)
 
     sending_app_lower = sending_app.lower()
-    if "vm100" in sending_app_lower:
+    # SH50 przedstawia się jako „SKYLA” z urządzeniem w MSH-4 — bez tego wpadał pod „skyla” = Tutti.
+    if "sh50" in f"{sending_app} {sending_facility}".lower():
+        device = "SH50"
+        device_type = "cbc"
+    elif "vm100" in sending_app_lower:
         device = "VM100"
         device_type = "cbc"
     elif "tutti" in sending_app_lower or "skyla" in sending_app_lower:
@@ -102,6 +112,15 @@ def _parse_pid_tutti(fields: list[str]) -> HL7Patient:
         name=_get_field(fields, 5),
         sex=_get_field(fields, 8),
         age=age.strip(),
+    )
+
+
+def _parse_pid_sh50(fields: list[str]) -> HL7Patient:
+    return HL7Patient(
+        patient_id=_get_field(fields, 2),
+        name=_get_field(fields, 5),
+        sex=_get_field(fields, 8),
+        birthday=_get_field(fields, 7),
     )
 
 
@@ -149,7 +168,8 @@ def _parse_obx(fields: list[str]) -> HL7Result | None:
 
 
 def _save_ed_segment(fields: list[str], sequence: str) -> None:
-    raw_data = _get_field(fields, 5)
+    # SH50 w przykładzie producenta potrafi wstawić dane o pole wcześniej (OBX-4 zamiast OBX-5).
+    raw_data = _get_field(fields, 5) or _get_field(fields, 4)
     try:
         import base64
 
@@ -157,15 +177,30 @@ def _save_ed_segment(fields: list[str], sequence: str) -> None:
         image_dir.mkdir(exist_ok=True)
 
         if raw_data and "^" in raw_data:
-            b64_data = raw_data.split("^", 1)[1]
-            jpeg_bytes = base64.b64decode(b64_data)
+            # Dane obrazu to ostatni składnik („^dane” albo „skyla SH50^Image^BMP^Base64^dane”).
+            b64_data = raw_data.rsplit("^", 1)[1].strip()
+            image_bytes = base64.b64decode(b64_data)
+            if image_bytes[:2] == b"BM":
+                image_bytes = _bmp_to_jpeg(image_bytes)
             param_parts = _split_field(_get_field(fields, 3))
             image_type = param_parts[0] if param_parts else f"img_{sequence}"
-            (image_dir / f"{image_type}_seq{sequence}.jpg").write_bytes(jpeg_bytes)
+            (image_dir / f"{image_type}_seq{sequence}.jpg").write_bytes(image_bytes)
         else:
             (image_dir / f"ed_segment_{sequence}.txt").write_text("|".join(fields), encoding="utf-8")
     except Exception as exc:
         logger.warning("Could not decode/save ED segment %s: %s", sequence, exc)
+
+
+def _bmp_to_jpeg(bmp_bytes: bytes) -> bytes:
+    """SH50 wysyła histogramy jako BMP; do Vet-Flow idą jako JPEG jak obrazy z VM100."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(bmp_bytes)) as image:
+        out = io.BytesIO()
+        image.convert("RGB").save(out, format="JPEG", quality=90)
+        return out.getvalue()
 
 
 def parse_hl7(message: str) -> HL7Message:
@@ -187,13 +222,19 @@ def parse_hl7(message: str) -> HL7Message:
             result.timestamp = msh["timestamp"]
             device_detected = True
         elif segment.startswith("PID"):
-            result.patient = _parse_pid_tutti(fields) if result.device == "Tutti" else _parse_pid_vm100(fields)
+            if result.device == "Tutti":
+                result.patient = _parse_pid_tutti(fields)
+            elif result.device == "SH50":
+                result.patient = _parse_pid_sh50(fields)
+            else:
+                result.patient = _parse_pid_vm100(fields)
         elif segment.startswith("PV1"):
             patient_id = _parse_pv1(fields)
             if patient_id and not result.patient.patient_id:
                 result.patient.patient_id = patient_id
         elif segment.startswith("OBR"):
-            result.panel_name = _parse_obr(fields)
+            # SH50: OBR-4 to opis urządzenia („AUTO ANALIZADOR HEMATOLÓGICO 5 DIF skyla SH50”), nie panel.
+            result.panel_name = "CBC" if result.device == "SH50" else _parse_obr(fields)
         elif segment.startswith("OBX"):
             obx = _parse_obx(fields)
             if obx is not None:
