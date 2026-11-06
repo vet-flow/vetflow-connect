@@ -167,3 +167,17 @@ async def test_failed_upload_kept_and_old_folders_pruned(tmp_path, monkeypatch):
     zostaly = list((tmp_path / "captured_images").iterdir())
     assert stary not in zostaly, "katalog starszy niż limit usunięty"
     assert len(zostaly) == 1 and list(zostaly[0].glob("*.jpg")), "świeża nieudana wysyłka zostaje"
+
+
+def test_bare_base64_image_without_ed_header_is_kept():
+    """Uwaga CodeAnt #14: OBX-5 z samym Base64 (bez „źródło^Image^…^”) — obraz przyjęty, jeśli to obraz."""
+    red = _jpeg_b64((200, 0, 0))
+    m = parse_hl7("\r".join([
+        r"MSH|^~\&|VM100|Intec Pet Hospital|||20260323143022||ORU^R01|M9|P|2.3.1||||||UNICODE UTF-8",
+        "PID|1||||||||Burek|Pies",
+        "OBR|1||M9|CBC",
+        "OBX|1|NM|WBC^White Blood Cell||12.5|10^9/L|6.0-17.0|N|||F",
+        f"OBX|2|ED|WBCHistogram||{red}|||||F",
+        "OBX|3|ED|IMG^Scatter Plot||base64encodeddata|||||F",
+    ]) + "\r")
+    assert m.images == [("WBCHistogram_seq2.jpg", base64.b64decode(red))], "tekst niebędący obrazem pominięty"

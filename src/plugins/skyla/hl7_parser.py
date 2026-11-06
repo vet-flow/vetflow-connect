@@ -169,21 +169,27 @@ def _decode_ed_image(fields: list[str]) -> tuple[str, bytes] | None:
     sequence = _get_field(fields, 1)
     # SH50 w przykładzie producenta potrafi wstawić dane o pole wcześniej (OBX-4 zamiast OBX-5).
     raw_data = _get_field(fields, 5) or _get_field(fields, 4)
-    if not raw_data or "^" not in raw_data:
-        logger.debug("OBX ED (seq %s) bez danych obrazu — zostaje tylko w surowej wiadomości", sequence)
+    if not raw_data:
         return None
     try:
         import base64
+        import binascii
 
-        # Dane obrazu to ostatni składnik („^dane” albo „skyla SH50^Image^BMP^Base64^dane”).
-        b64_data = raw_data.rsplit("^", 1)[1].strip()
-        image_bytes = base64.b64decode(b64_data)
-        if image_bytes[:2] == b"BM":
+        # Dane obrazu to ostatni składnik („^dane”, „skyla SH50^Image^BMP^Base64^dane”) albo — bez nagłówka
+        # HL7 ED — samo Base64 (uwaga CodeAnt #14). Bierzemy tylko to, co po zdekodowaniu jest obrazem.
+        b64_data = raw_data.rsplit("^", 1)[-1].strip()
+        image_bytes = base64.b64decode(b64_data, validate=True)
+    except (binascii.Error, ValueError):
+        logger.debug("OBX ED (seq %s) bez danych obrazu — zostaje tylko w surowej wiadomości", sequence)
+        return None
+    try:
+        if image_bytes[:2] == b"BM" or image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
             image_bytes = _bmp_to_jpeg(image_bytes)
+        elif image_bytes[:3] != b"\xff\xd8\xff":
+            logger.debug("OBX ED (seq %s): dane nie są obrazem — pominięte", sequence)
+            return None
     except Exception as exc:
         logger.warning("Could not decode ED segment %s: %s", sequence, exc)
-        return None
-    if not image_bytes:
         return None
     param_parts = _split_field(_get_field(fields, 3))
     image_type = _safe_name(param_parts[0] if param_parts else "") or "img"
@@ -196,7 +202,7 @@ def _safe_name(value: str) -> str:
 
 
 def _bmp_to_jpeg(bmp_bytes: bytes) -> bytes:
-    """SH50 wysyła histogramy jako BMP; do Vet-Flow idą jako JPEG jak obrazy z VM100."""
+    """SH50 wysyła histogramy jako BMP (bywa też PNG); do Vet-Flow idą jako JPEG jak obrazy z VM100."""
     import io
 
     from PIL import Image
