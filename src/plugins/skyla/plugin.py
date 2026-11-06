@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +21,9 @@ from .hl7_listener import HL7Listener
 from .hl7_parser import HL7Message, parse_hl7
 
 logger = logging.getLogger("vetflow_connect")
+
+# Ile dni trzymać obrazy, których nie udało się wysłać (diagnostyka) — potem kasowane.
+IMAGE_RETENTION_DAYS = 7
 
 
 class SkylaPlugin(DevicePlugin):
@@ -160,10 +165,13 @@ class SkylaPlugin(DevicePlugin):
         """Zapisuje obrazy jednej wiadomości do jej własnego podkatalogu pod app_dir().
 
         Podkatalog jest unikalny (czas + numer wiadomości + losowy sufiks), więc obrazy jednego pacjenta
-        nigdy nie trafią do wyniku innego. Pliki zostają jako kopia diagnostyczna i nie są wysyłane ponownie.
+        nigdy nie trafią do wyniku innego. Po udanej wysyłce katalog jest usuwany (_upload_images); nieudane
+        zostają do diagnostyki najwyżej IMAGE_RETENTION_DAYS (uwaga CodeAnt #14 — dane pacjentów nie mogą
+        zalegać na dysku bez końca).
         """
         if not images:
             return []
+        self._prune_old_images()
         order = re.sub(r"[^A-Za-z0-9_-]", "_", str(panel.get("order_number") or ""))[:40]
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         folder = app_dir() / "captured_images" / f"{stamp}_{order or 'msg'}_{uuid.uuid4().hex[:8]}"
@@ -195,3 +203,19 @@ class SkylaPlugin(DevicePlugin):
         )
         ok = await self.api_client.send_images(lab_result_id, image_paths)
         logger.info("[%s] Image upload %s", self._device_config.get("name", self.display_name), "OK" if ok else "FAIL")
+        if ok and image_paths:
+            # Obrazy są już w Vet-Flow — kopia na komputerze przychodni niepotrzebna.
+            shutil.rmtree(image_paths[0].parent, ignore_errors=True)
+
+    def _prune_old_images(self) -> None:
+        """Usuwa katalogi obrazów (zwykle nieudane wysyłki) starsze niż IMAGE_RETENTION_DAYS."""
+        root = app_dir() / "captured_images"
+        if not root.is_dir():
+            return
+        granica = time.time() - IMAGE_RETENTION_DAYS * 86400
+        for folder in root.iterdir():
+            try:
+                if folder.is_dir() and folder.stat().st_mtime < granica:
+                    shutil.rmtree(folder, ignore_errors=True)
+            except OSError:
+                continue

@@ -42,7 +42,8 @@ def _vm100(message_id: str, patient: str, images: dict[str, str]) -> str:
 
 
 class _FakeApi:
-    def __init__(self) -> None:
+    def __init__(self, images_ok: bool = True) -> None:
+        self.images_ok = images_ok
         self.sent: list[dict] = []
         self.images: list[tuple[int, list[tuple[str, bytes]]]] = []
 
@@ -52,7 +53,7 @@ class _FakeApi:
 
     async def send_images(self, lab_result_id: int, image_paths: list[Path]) -> bool:
         self.images.append((lab_result_id, [(p.name, p.read_bytes()) for p in image_paths]))
-        return True
+        return self.images_ok
 
 
 def _plugin(api: _FakeApi) -> SkylaPlugin:
@@ -128,7 +129,7 @@ async def test_frozen_build_stores_images_next_to_exe(tmp_path, monkeypatch):
     monkeypatch.setattr(plugin_module, "app_dir", core_config.app_dir)
     assert core_config.app_dir() == exe_dir.resolve()
 
-    api = _FakeApi()
+    api = _FakeApi(images_ok=False)  # nieudana wysyłka — kopia zostaje, więc widać, gdzie leży
     plugin = _plugin(api)
     await plugin._handle_message(_vm100("M1", "Burek", {"WBCHistogram": _jpeg_b64((200, 0, 0))}))
 
@@ -136,3 +137,33 @@ async def test_frozen_build_stores_images_next_to_exe(tmp_path, monkeypatch):
     assert stored.resolve().is_relative_to(exe_dir.resolve() / "captured_images")
     assert not list(internal.rglob("*.jpg")), "nic nie trafia do _internal"
     assert [(lab_id, [name for name, _ in files]) for lab_id, files in api.images] == [(1, ["WBCHistogram_seq20.jpg"])]
+
+
+
+@pytest.mark.asyncio
+async def test_sent_images_are_removed_from_disk(tmp_path, monkeypatch):
+    """Uwaga CodeAnt #14: po udanej wysyłce obrazy pacjenta nie zalegają na komputerze przychodni."""
+    monkeypatch.setattr(plugin_module, "app_dir", lambda: tmp_path)
+    api = _FakeApi()
+    await _plugin(api)._handle_message(_vm100("M1", "Burek", {"WBCHistogram": _jpeg_b64((200, 0, 0))}))
+    assert api.images, "obraz wysłany"
+    assert not list((tmp_path / "captured_images").iterdir()), "katalog po udanej wysyłce usunięty"
+
+
+@pytest.mark.asyncio
+async def test_failed_upload_kept_and_old_folders_pruned(tmp_path, monkeypatch):
+    """Nieudana wysyłka zostaje do diagnostyki, ale najwyżej IMAGE_RETENTION_DAYS."""
+    import os
+    import time
+
+    monkeypatch.setattr(plugin_module, "app_dir", lambda: tmp_path)
+    stary = tmp_path / "captured_images" / "20260101_000000_000000_M0_deadbeef"
+    stary.mkdir(parents=True)
+    (stary / "x.jpg").write_bytes(b"x")
+    dawno = time.time() - (plugin_module.IMAGE_RETENTION_DAYS + 1) * 86400
+    os.utime(stary, (dawno, dawno))
+
+    await _plugin(_FakeApi(images_ok=False))._handle_message(_vm100("M1", "Burek", {"WBCHistogram": _jpeg_b64((200, 0, 0))}))
+    zostaly = list((tmp_path / "captured_images").iterdir())
+    assert stary not in zostaly, "katalog starszy niż limit usunięty"
+    assert len(zostaly) == 1 and list(zostaly[0].glob("*.jpg")), "świeża nieudana wysyłka zostaje"
