@@ -3,10 +3,10 @@
   "device_serial": "*",
   "display_name": "Skyla",
   "expires_at": null,
-  "files_hash": "sha256:dbcc97c709f6eb0bb9453203f1824b9673bc7b27dc13b019c1da8052bc8436a3",
+  "files_hash": "sha256:1dce9f563cf953d02b8e1d438a46c7abeabaf1c2bbd1076371b38f4ca4380e22",
   "license_type": "open",
   "name": "skyla",
   "partner_id": "vetflow",
-  "signed_at": "2026-07-07T10:33:24.505455Z",
-  "version": "1.0.0"
+  "signed_at": "2026-11-06T10:48:09.916861Z",
+  "version": "1.1.0"
 }
