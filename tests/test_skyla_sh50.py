@@ -55,3 +55,26 @@ def test_tutti_and_vm100_unchanged():
 
     assert parse_hl7(TUTTI_CHEMISTRY).device == "Tutti"
     assert parse_hl7(VM100_CBC).device == "VM100"
+
+
+def test_sh50_real_device_name_in_pv1_before_pid():
+    """Bandikot 6.11: prawdziwy SH50 wysyła „Pat.Name” w PV1-3 (PV1 przed PID), PID-5 pusty —
+    wynik przychodził bez pacjenta i nie przypisywał się do wizyty. MSH-10 stały („4”), próbka w OBR-3."""
+    real = "\r".join([
+        r"MSH|^~\&|SKYLA|SH50|LIS|PC|20261106212400||ORU^R01|4|P|2.3.1||||||UNICODE",
+        "PV1|1||cynamon",
+        "PID|1||||||18|M",
+        "OBR|1||0000002|SKYLA^SH50|||20261106190100||||||||1|||||2|",
+        "OBX|1|NM|WBC||11.28|10^9/L|2.87-17.02||||F||||cynamon|administrator|",
+    ]) + "\r"
+    m = parse_hl7(real)
+    assert (m.device, m.panel_name) == ("SH50", "CBC")
+    assert m.patient.name == "cynamon"
+    assert m.patient.sex == "M"
+    assert m.message_id == "0000002", "numer próbki, nie stałe MSH-10"
+    assert [(r.name, r.value) for r in m.results] == [("WBC", "11.28")]
+
+
+def test_sh50_pid_name_still_wins_over_pv1():
+    m = parse_hl7(_message().replace("PV1|1|||", "PV1|1||inne"))
+    assert m.patient.name == "Mary"
