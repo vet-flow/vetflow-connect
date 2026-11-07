@@ -217,6 +217,7 @@ def parse_hl7(message: str) -> HL7Message:
     result = HL7Message()
     segments = re.split(r"\r\n|\r|\n", message.strip())
     device_detected = False
+    sh50_imie = ""
 
     for segment in segments:
         if not segment.strip():
@@ -239,12 +240,20 @@ def parse_hl7(message: str) -> HL7Message:
             else:
                 result.patient = _parse_pid_vm100(fields)
         elif segment.startswith("PV1"):
+            if result.device == "SH50":
+                # Prawdziwy SH50 (Bandikot 6.11) wysyła „Pat.Name” w PV1-3, a nie w PID-5 z dokumentacji —
+                # i PV1 przed PID. Odkładamy imię i uzupełniamy pacjenta po przeczytaniu całej wiadomości.
+                sh50_imie = _get_field(fields, 3).strip()
+                continue
             patient_id = _parse_pv1(fields)
             if patient_id and not result.patient.patient_id:
                 result.patient.patient_id = patient_id
         elif segment.startswith("OBR"):
             # SH50: OBR-4 to opis urządzenia („AUTO ANALIZADOR HEMATOLÓGICO 5 DIF skyla SH50”), nie panel.
             result.panel_name = "CBC" if result.device == "SH50" else _parse_obr(fields)
+            if result.device == "SH50" and _get_field(fields, 3).strip():
+                # MSH-10 w SH50 jest stały między badaniami („4”); numer próbki to OBR-3.
+                result.message_id = _get_field(fields, 3).strip()
         elif segment.startswith("OBX"):
             if _get_field(fields, 2) == "ED":
                 image = _decode_ed_image(fields)
@@ -254,6 +263,9 @@ def parse_hl7(message: str) -> HL7Message:
             obx = _parse_obx(fields)
             if obx is not None:
                 result.results.append(obx)
+
+    if sh50_imie and not result.patient.name:
+        result.patient.name = sh50_imie
 
     if not device_detected:
         logger.warning("No MSH segment found in message")

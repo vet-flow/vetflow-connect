@@ -33,7 +33,7 @@ class SkylaPlugin(DevicePlugin):
     display_name = "Skyla Analyzer"
     protocol = "hl7"
     device_type = "lab_analyzer"
-    version = "1.1.0"
+    version = "1.1.1"
 
     def __init__(self) -> None:
         super().__init__()
