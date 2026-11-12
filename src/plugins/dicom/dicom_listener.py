@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from pynetdicom import AE, AllStoragePresentationContexts, evt
+from pynetdicom import ALL_TRANSFER_SYNTAXES, AE, AllStoragePresentationContexts, evt
 from pynetdicom.sop_class import Verification  # C-ECHO
 
 logger = logging.getLogger("vetflow_connect")
@@ -38,8 +38,13 @@ class DicomListener:
         captured_dir: Path,
     ):
         self.ae = AE(ae_title=ae_title)
-        # Accept every storage SOP class (CR/DX, US, CT, Secondary Capture, ...)
-        self.ae.supported_contexts = AllStoragePresentationContexts
+        # Accept every storage SOP class (CR/DX, US, CT, Secondary Capture, ...) in EVERY
+        # transfer syntax, compressed included. VETFL-993: USG ProPet70 (Bandikot) proposes
+        # JPEG; with pynetdicom's default (uncompressed only) the context was rejected during
+        # negotiation — Echo OK, "storage failed" on the modality, nothing in our log.
+        # We write the encoded bytes as-is, so storing needs no decoder.
+        for context in AllStoragePresentationContexts:
+            self.ae.add_supported_context(context.abstract_syntax, ALL_TRANSFER_SYNTAXES)
         self.ae.add_supported_context(Verification)  # C-ECHO ping (modality "Echo" test)
         self.ae.maximum_pdu_size = 0  # no cap our side
         self._on_store = on_store

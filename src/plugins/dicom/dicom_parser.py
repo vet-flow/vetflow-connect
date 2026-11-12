@@ -106,6 +106,9 @@ def render_jpeg(ds, out_path: Path, quality: int = 85) -> Path | None:
             apply_voi_lut = None
 
         arr = ds.pixel_array
+        # Cine loop / multi-frame (typical for USG): the card preview is the first frame.
+        if int(getattr(ds, "NumberOfFrames", 1) or 1) > 1:
+            arr = arr[0]
         if apply_voi_lut is not None:
             try:
                 arr = apply_voi_lut(arr, ds)
