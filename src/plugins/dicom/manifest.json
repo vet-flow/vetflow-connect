@@ -3,10 +3,10 @@
   "device_serial": "*",
   "display_name": "Dicom",
   "expires_at": null,
-  "files_hash": "sha256:fd972b51b3115aa813bb924a1f932c2b4699b5720acd3e7ba3ff0c5a2a813b60",
+  "files_hash": "sha256:d8aa4cb4bc84b821525975fbc01b1c3e63e08f4b7fee9f597ee9f4bdd6d70ae4",
   "license_type": "open",
   "name": "dicom",
   "partner_id": "vetflow",
-  "signed_at": "2026-11-06T10:48:10.009897Z",
-  "version": "1.0.0"
+  "signed_at": "2026-11-12T14:50:11.785217Z",
+  "version": "1.0.1"
 }
