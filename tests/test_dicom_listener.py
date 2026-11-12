@@ -58,6 +58,17 @@ def test_usg_context_accepted_in_compressed_syntax(listener, transfer_syntax):
         assoc.release()
 
 
+@pytest.mark.parametrize("retired_us", ["1.2.840.10008.5.1.4.1.1.6", "1.2.840.10008.5.1.4.1.1.3"])
+def test_retired_ultrasound_classes_accepted(listener, retired_us):
+    port, _, _ = listener
+    assoc = _associate(port, retired_us, ImplicitVRLittleEndian)
+    try:
+        assert assoc.is_established
+        assert len(assoc.accepted_contexts) == 1
+    finally:
+        assoc.release()
+
+
 def test_jpeg_compressed_image_is_stored_as_received(listener):
     port, received, done = listener
     ds = pydicom.dcmread(get_testdata_file("SC_rgb_jpeg_dcmtk.dcm"))

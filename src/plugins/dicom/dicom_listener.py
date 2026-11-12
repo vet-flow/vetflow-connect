@@ -28,6 +28,9 @@ def _uid_name(uid) -> str:
     name = getattr(uid, "name", "") or ""
     return name if name and name != str(uid) else str(uid)
 
+# Ultrasound Image Storage (Retired), Ultrasound Multi-frame Image Storage (Retired)
+RETIRED_US_STORAGE = ("1.2.840.10008.5.1.4.1.1.6", "1.2.840.10008.5.1.4.1.1.3")
+
 # async callable(dcm_path: Path) — agent-side parse + render + spool
 StoreCallback = Callable[[Path], Awaitable[None]]
 
@@ -51,6 +54,10 @@ class DicomListener:
         # We write the encoded bytes as-is, so storing needs no decoder.
         for context in AllStoragePresentationContexts:
             self.ae.add_supported_context(context.abstract_syntax, ALL_TRANSFER_SYNTAXES)
+        # Older ultrasound units still send the RETIRED US SOP classes, which pynetdicom's
+        # storage list leaves out — without them a USG gets "storage failed" even uncompressed.
+        for retired_us in RETIRED_US_STORAGE:
+            self.ae.add_supported_context(retired_us, ALL_TRANSFER_SYNTAXES)
         self.ae.add_supported_context(Verification)  # C-ECHO ping (modality "Echo" test)
         self.ae.maximum_pdu_size = 0  # no cap our side
         self._on_store = on_store
