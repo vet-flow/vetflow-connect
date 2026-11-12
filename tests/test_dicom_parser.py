@@ -42,3 +42,26 @@ def test_render_jpeg_produces_file(tmp_path):
     out = render_jpeg(ds, tmp_path / "render.jpg")
     assert out is not None and out.exists()
     assert out.stat().st_size > 0
+
+
+def test_render_jpeg_multiframe_uses_first_frame(tmp_path):
+    # VETFL-993: USG sends cine loops (many frames) — the card preview is frame one.
+    ds = pydicom.dcmread(get_testdata_file("SC_rgb_rle_2frame.dcm"))
+    out = render_jpeg(ds, tmp_path / "cine.jpg")
+    assert out is not None and out.exists()
+    from PIL import Image
+
+    with Image.open(out) as img:
+        assert img.size == (ds.Columns, ds.Rows)
+
+
+def test_render_jpeg_from_jpeg_compressed_image(tmp_path):
+    ds = pydicom.dcmread(get_testdata_file("SC_rgb_jpeg_dcmtk.dcm"))
+    out = render_jpeg(ds, tmp_path / "jpeg.jpg")
+    assert out is not None and out.exists()
+
+
+def test_render_jpeg_multiframe_decodes_only_first_frame(tmp_path, monkeypatch):
+    ds = pydicom.dcmread(get_testdata_file("SC_rgb_rle_2frame.dcm"))
+    monkeypatch.setattr(type(ds), "pixel_array", property(lambda self: pytest.fail("decoded every frame")))
+    assert render_jpeg(ds, tmp_path / "cine.jpg") is not None

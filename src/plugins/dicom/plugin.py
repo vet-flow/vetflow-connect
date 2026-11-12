@@ -91,7 +91,10 @@ class DicomPlugin(DevicePlugin):
         if self._device_config.get("render_jpeg", True) and "PixelData" in ds:
             quality = int(self._device_config.get("jpeg_quality", 85))
             jpeg_dir = app_dir() / "captured_dicom_jpeg"
-            jpeg_path = render_jpeg(ds, jpeg_dir / f"{study.sop_uid}.jpg", quality=quality)
+            # decode + render off the agent loop — heartbeats and analyzers keep running
+            jpeg_path = await asyncio.to_thread(
+                render_jpeg, ds, jpeg_dir / f"{study.sop_uid}.jpg", quality=quality
+            )
             study.jpeg_path = jpeg_path
 
         if self.api_client is None:

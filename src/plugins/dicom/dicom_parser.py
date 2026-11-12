@@ -105,7 +105,17 @@ def render_jpeg(ds, out_path: Path, quality: int = 85) -> Path | None:
         except Exception:  # pragma: no cover — older pydicom
             apply_voi_lut = None
 
-        arr = ds.pixel_array
+        # Cine loop / multi-frame (typical for USG): the card preview is the first frame.
+        # Decode only that one — a long compressed cine decoded whole costs memory and time.
+        if int(getattr(ds, "NumberOfFrames", 1) or 1) > 1:
+            try:
+                from pydicom.pixels import pixel_array as decode_pixels
+            except ImportError:  # pragma: no cover — pydicom 2.x decodes all frames
+                arr = ds.pixel_array[0]
+            else:
+                arr = decode_pixels(ds, index=0)
+        else:
+            arr = ds.pixel_array
         if apply_voi_lut is not None:
             try:
                 arr = apply_voi_lut(arr, ds)
