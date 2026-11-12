@@ -73,3 +73,24 @@ def test_jpeg_compressed_image_is_stored_as_received(listener):
     stored = pydicom.dcmread(received[0])
     assert stored.file_meta.TransferSyntaxUID == JPEGBaseline8Bit
     assert stored.SOPInstanceUID == ds.SOPInstanceUID
+
+
+def test_refused_image_type_is_logged_with_proposed_syntaxes(listener, caplog):
+    # A refused context never reaches C-STORE — without this the modality says "storage
+    # failed" and our log is silent (Bandikot USG, 12.11).
+    from pynetdicom.sop_class import ModalityWorklistInformationFind, Verification
+
+    port, _, _ = listener
+    scu = AE(ae_title="PROPET70")
+    scu.add_requested_context(Verification)
+    scu.add_requested_context(ModalityWorklistInformationFind)
+    with caplog.at_level("WARNING", logger="vetflow_connect"):
+        assoc = scu.associate("127.0.0.1", port, ae_title="VETFLOW")
+        assert assoc.is_established
+        assoc.release()
+
+    refused = [r.getMessage() for r in caplog.records if "odrzucony typ" in r.getMessage()]
+    assert len(refused) == 1
+    assert "PROPET70" in refused[0]
+    assert "Modality Worklist" in refused[0]
+    assert "Implicit VR Little Endian" in refused[0]

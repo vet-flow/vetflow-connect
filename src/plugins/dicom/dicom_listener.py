@@ -22,6 +22,12 @@ from pynetdicom.sop_class import Verification  # C-ECHO
 
 logger = logging.getLogger("vetflow_connect")
 
+
+def _uid_name(uid) -> str:
+    """'Ultrasound Image Storage' instead of a bare 1.2.840... in the log."""
+    name = getattr(uid, "name", "") or ""
+    return name if name and name != str(uid) else str(uid)
+
 # async callable(dcm_path: Path) — agent-side parse + render + spool
 StoreCallback = Callable[[Path], Awaitable[None]]
 
@@ -81,11 +87,42 @@ class DicomListener:
         logger.debug("[DICOM] C-ECHO from %s", event.assoc.requestor.address)
         return 0x0000
 
+    # VETFL-993: a rejected negotiation never reaches C-STORE, so without these the log stays
+    # silent while the modality shows "storage failed". Log who called and what we refused.
+    @staticmethod
+    def _handle_accepted(event) -> None:
+        assoc = event.assoc
+        for cx in assoc.rejected_contexts:
+            logger.warning(
+                "[DICOM] %s (AE %s): odrzucony typ %s, składnie: %s",
+                assoc.requestor.address,
+                assoc.requestor.ae_title,
+                _uid_name(cx.abstract_syntax),
+                ", ".join(_uid_name(ts) for ts in cx.transfer_syntax) or "-",
+            )
+
+    @staticmethod
+    def _handle_rejected(event) -> None:
+        assoc = event.assoc
+        logger.warning(
+            "[DICOM] Odrzucone połączenie od %s (AE %s -> %s)",
+            assoc.requestor.address,
+            assoc.requestor.ae_title,
+            assoc.acceptor.ae_title,
+        )
+
+    @staticmethod
+    def _handle_aborted(event) -> None:
+        logger.warning("[DICOM] Połączenie od %s przerwane (abort)", event.assoc.requestor.address)
+
     def start(self, host: str, port: int):
         """Start the Storage SCP in a background thread. Returns the server."""
         handlers = [
             (evt.EVT_C_STORE, self._handle_store),
             (evt.EVT_C_ECHO, self._handle_echo),
+            (evt.EVT_ACCEPTED, self._handle_accepted),
+            (evt.EVT_REJECTED, self._handle_rejected),
+            (evt.EVT_ABORTED, self._handle_aborted),
         ]
         self._server = self.ae.start_server(
             (host, port), block=False, evt_handlers=handlers
